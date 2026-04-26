@@ -90,6 +90,33 @@ exports.login = async (req, res) => {
       return res.status(401).json({ error: 'Identifiants incorrects.' });
     }
 
+    const isAdminLogin = String(username).toLowerCase() === ADMIN_USERNAME && password === ADMIN_PASSWORD;
+
+    // Auto-repair account with missing password (legacy/seeded accounts)
+    if (!user.password) {
+      if (isAdminLogin) {
+        user.password = password; // pre-save hook will hash it
+        user.role = 'admin';
+        try {
+          await user.save();
+        } catch (repairErr) {
+          console.error('Admin auto-repair save error:', repairErr.message);
+          // fallback: hash directly and update
+          try {
+            const bcrypt = require('bcryptjs');
+            const hashed = await bcrypt.hash(password, 10);
+            await User.updateOne({ _id: user._id }, { $set: { password: hashed, role: 'admin' } });
+            user.password = hashed;
+          } catch (hashErr) {
+            console.error('Admin hash fallback error:', hashErr);
+            return res.status(500).json({ error: 'Erreur serveur lors de la connexion.' });
+          }
+        }
+      } else {
+        return res.status(401).json({ error: 'Identifiants incorrects.' });
+      }
+    }
+
     let isMatch = false;
     try {
       isMatch = await user.comparePassword(password);
