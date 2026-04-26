@@ -74,42 +74,72 @@ exports.signup = async (req, res) => {
 
 exports.login = async (req, res) => {
   try {
-    const { username, password } = req.body;
+    if (!process.env.JWT_SECRET) {
+      console.error('Login error: JWT_SECRET missing in environment');
+      return res.status(500).json({ error: 'Configuration serveur manquante (JWT_SECRET).' });
+    }
+
+    const { username, password } = req.body || {};
 
     if (!username || !password) {
       return res.status(400).json({ error: 'Nom d\'utilisateur et mot de passe requis.' });
     }
 
-    const user = await User.findOne({ username: username.toLowerCase() });
+    const user = await User.findOne({ username: String(username).toLowerCase() });
     if (!user) {
       return res.status(401).json({ error: 'Identifiants incorrects.' });
     }
 
-    const isMatch = await user.comparePassword(password);
+    let isMatch = false;
+    try {
+      isMatch = await user.comparePassword(password);
+    } catch (e) {
+      console.error('Password compare error:', e);
+      return res.status(500).json({ error: 'Erreur serveur lors de la connexion.' });
+    }
+
     if (!isMatch) {
       return res.status(401).json({ error: 'Identifiants incorrects.' });
     }
 
-    // Check admin credentials
-    if (username.toLowerCase() === ADMIN_USERNAME && password === ADMIN_PASSWORD && user.role !== 'admin') {
+    // Promote admin if credentials match
+    let roleChanged = false;
+    if (String(username).toLowerCase() === ADMIN_USERNAME && password === ADMIN_PASSWORD && user.role !== 'admin') {
       user.role = 'admin';
-      await user.save();
+      roleChanged = true;
     }
 
-    user.online = true;
-    await user.save();
+    // Persist online + eventual role change. Failure here must not break login.
+    try {
+      user.online = true;
+      await user.save({ validateModifiedOnly: true });
+    } catch (saveErr) {
+      console.error('Login save warning:', saveErr.message);
+      if (roleChanged) {
+        try {
+          await User.updateOne({ _id: user._id }, { $set: { role: 'admin', online: true } });
+        } catch (fallbackErr) {
+          console.error('Login fallback update error:', fallbackErr.message);
+        }
+      } else {
+        try {
+          await User.updateOne({ _id: user._id }, { $set: { online: true } });
+        } catch {}
+      }
+    }
 
     const token = generateToken(user);
 
-    await Log.create({
+    // Log is best-effort
+    Log.create({
       action: 'login',
       userId: user._id,
       username: user.username,
-      details: `User logged in`,
+      details: 'User logged in',
       ip: req.ip
-    });
+    }).catch(e => console.error('Log login error:', e.message));
 
-    res.json({
+    return res.json({
       token,
       user: {
         id: user._id,
@@ -121,7 +151,7 @@ exports.login = async (req, res) => {
     });
   } catch (err) {
     console.error('Login error:', err);
-    res.status(500).json({ error: 'Erreur serveur lors de la connexion.' });
+    return res.status(500).json({ error: 'Erreur serveur lors de la connexion.' });
   }
 };
 
