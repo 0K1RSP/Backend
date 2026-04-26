@@ -16,7 +16,24 @@ const Box = require('./models/Box');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+const allowedOrigins = [
+  'https://backend-rnxv.onrender.com',
+  /\.netlify\.app$/,
+  'http://localhost:3000',
+  'http://127.0.0.1:3000'
+];
+
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    const allowed = allowedOrigins.some((entry) =>
+      entry instanceof RegExp ? entry.test(origin) : entry === origin
+    );
+    if (allowed) return callback(null, true);
+    return callback(new Error('CORS blocked for this origin'));
+  },
+  credentials: true
+}));
 app.use(express.json());
 
 app.use('/auth', authRoutes);
